@@ -1,0 +1,3 @@
+# BookfusionPluginsResearch
+
+Исследование доступных плагинов Bookfusion
