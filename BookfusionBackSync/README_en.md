@@ -34,6 +34,8 @@ Used during development:
    Calibre custom Date column.
 5. Sorts processing order so the most recently read books are written first;
    books without dates are processed last.
+6. Optionally sets a Completed flag in a selected Calibre Yes/No column when
+   `reading_position.percentage` is above the configured threshold.
 
 Date source priority:
 - `last_read_at` from BookFusion API (when present)
@@ -77,6 +79,8 @@ Open settings using the **Settings** button in the plugin dialog, or:
 | BookFusion Email | BookFusion account email |
 | Password | Account password |
 | Last Read Column | Calibre custom Date column to write into |
+| Completed Column (bool) | Optional Calibre Yes/No column for completed books |
+| Completed Threshold (%) | Completion threshold in percent (default `99.9`) |
 
 Password is stored as plain text in Calibre config
 (`plugins/bookfusionbacksync.json`), similar to how the official plugin stores the API key.
@@ -115,6 +119,7 @@ For each updated book, lines look like:
 ```text
 OK    The Name of the Wind  ->  2024-11-03  (from reading_position.updated_at)
 OK    Dune                  ->  2025-01-15  (from last_read_at, match=book_id)
+OK    Dune                  ->  Completed=True  (percentage=100.000, threshold=99.90, match=book_id)
 ```
 
 Books without a match in BookFusion are skipped silently (counted in `M skipped`).
@@ -144,6 +149,7 @@ Each `BookV3` item includes:
 - `id` - user-library record id
 - `last_read_at` - last read timestamp (often `null`)
 - `reading_position.updated_at` - last reading position update timestamp
+- `reading_position.percentage` - read percentage (used for Completed flag)
 
 HTTP calls are made with Python standard library (`urllib.request`),
 without external dependencies.

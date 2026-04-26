@@ -15,6 +15,9 @@ class MainDialog(QDialog):
         self.gui = gui
         self.do_user_config = do_user_config
         self.worker = None
+        self._pending_logs = []
+        self._ui_batch_size = None
+        self._ui_batch_logs_enabled = False
 
         self.setWindowTitle('BookFusion Back Sync')
         self.resize(560, 420)
@@ -67,6 +70,9 @@ class MainDialog(QDialog):
         self.log_list.clear()
         self.status_label.setText('Starting…')
         self.progress_bar.setValue(0)
+        self._pending_logs = []
+        self._ui_batch_size = None
+        self._ui_batch_logs_enabled = bool(prefs['ui_batch_logs'])
 
         self.worker = SyncWorker(
             self.gui.current_db.new_api,
@@ -79,14 +85,27 @@ class MainDialog(QDialog):
         self.worker.start()
 
     def _on_log(self, msg):
+        if self._ui_batch_logs_enabled and self._ui_batch_size:
+            self._pending_logs.append(msg)
+            if len(self._pending_logs) >= self._ui_batch_size:
+                self._flush_log_batch()
+            return
+
         self.log_list.addItem(msg)
         self.log_list.scrollToBottom()
 
     def _on_progress(self, val, total):
+        if self._ui_batch_logs_enabled and total > 0 and self._ui_batch_size is None:
+            # Dynamic batch size: never more than 0.5% of total books.
+            self._ui_batch_size = max(1, int(total * 0.005))
+            if self._pending_logs:
+                self._flush_log_batch()
+
         if total > 0:
             self.progress_bar.setValue(int(val * 100 / total))
 
     def _on_finished(self, updated, skipped):
+        self._flush_log_batch()
         self.sync_btn.setEnabled(True)
         self.settings_btn.setEnabled(True)
         self.status_label.setText(
@@ -100,3 +119,10 @@ class MainDialog(QDialog):
             self.worker.stop()
             self.worker.wait(3000)
         QDialog.reject(self)
+
+    def _flush_log_batch(self):
+        if not self._pending_logs:
+            return
+        self.log_list.addItems(self._pending_logs)
+        self._pending_logs = []
+        self.log_list.scrollToBottom()

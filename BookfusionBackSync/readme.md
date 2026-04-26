@@ -31,6 +31,8 @@ Bookfusion (c)
 4. Для каждой совпавшей книги записывает дату последнего чтения в выбранную
     custom-колонку типа Date.
 5. Перед записью сортирует книги: сначала самые недавно читанные, книги без даты — в конце.
+6. Опционально выставляет флаг Completed в выбранную Yes/No-колонку Calibre,
+   если `reading_position.percentage` в BookFusion выше порога.
 
 Источник даты — в порядке приоритета:
 - `last_read_at` из BookFusion API (если не пустое)
@@ -74,6 +76,8 @@ Bookfusion (c)
 | BookFusion Email | Email аккаунта BookFusion |
 | Password | Пароль аккаунта |
 | Last Read Column | Custom-колонка Calibre типа Date, куда писать дату |
+| Completed Column (bool) | Опциональная Yes/No-колонка Calibre для признака «дочитано» |
+| Completed Threshold (%) | Порог процента дочитывания для Completed (по умолчанию `99.9`) |
 
 Пароль хранится в открытом виде в файле конфигурации Calibre
 (`plugins/bookfusionbacksync.json`) — аналогично тому, как штатный плагин
@@ -113,6 +117,7 @@ Device ID генерируется автоматически при перво�
 ```
 OK    The Name of the Wind  →  2024-11-03  (from reading_position.updated_at)
 OK    Dune                  →  2025-01-15  (from last_read_at, match=book_id)
+OK    Dune                  →  Completed=True  (percentage=100.000, threshold=99.90, match=book_id)
 ```
 
 Книги без совпадения в BookFusion — молча пропускаются (учитываются в `M skipped`).
@@ -142,6 +147,7 @@ OK    Dune                  →  2025-01-15  (from last_read_at, match=book_id)
 - `id` — ID записи книги в библиотеке пользователя
 - `last_read_at` — дата последнего чтения (часто `null`)
 - `reading_position.updated_at` — дата последнего обновления позиции чтения
+- `reading_position.percentage` — процент прочитанного (используется для Completed)
 
 HTTP-запросы делаются через стандартную библиотеку Python (`urllib.request`) —
 без внешних зависимостей.

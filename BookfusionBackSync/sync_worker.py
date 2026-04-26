@@ -29,6 +29,7 @@ _POST_HEADERS = {
 _FETCH_PER_PAGE = 5000
 _FETCH_TIMEOUT = 90
 _SKIP_LOG_SAMPLE_LIMIT = 20
+_DEFAULT_COMPLETED_THRESHOLD = 99.9
 
 
 class SyncWorker(QThread):
@@ -90,7 +91,16 @@ class SyncWorker(QThread):
         email    = prefs['email']
         password = prefs['password']
         column   = prefs['last_read_column']
-        self._log.info(f'Email: {email}  Column: {column}')
+        completed_column = prefs['completed_column']
+        completed_threshold = _as_float(
+            prefs['completed_threshold'],
+            _DEFAULT_COMPLETED_THRESHOLD,
+        )
+        self._log.info(
+            f'Email: {email}  Date column: {column}  '
+            f'Completed column: {completed_column or "(disabled)"}  '
+            f'Completed threshold: {completed_threshold:.2f}%'
+        )
 
         # 1. Authenticate
         self.status.emit('Authenticating…')
@@ -120,9 +130,12 @@ class SyncWorker(QThread):
         # - BookV3.book_id (global uploaded/catalog id, used by official Calibre plugin)
         bf_map_by_id = {}
         bf_map_by_book_id = {}
+        bf_completed_by_id = {}
+        bf_completed_by_book_id = {}
         bf_all_ids = set()
         bf_all_book_ids = set()
         invalid_date_count = 0
+        invalid_percentage_count = 0
         for book in bf_books:
             bf_id = _id_key(book.get('id'))
             bf_book_id = _id_key(book.get('book_id'))
@@ -147,9 +160,26 @@ class SyncWorker(QThread):
                 if bf_book_id:
                     bf_map_by_book_id[bf_book_id] = (dt, source)
 
+            rp = book.get('reading_position') or {}
+            pct = _as_float(rp.get('percentage'))
+            if pct is None:
+                if rp.get('percentage') is not None:
+                    invalid_percentage_count += 1
+                continue
+            if pct >= completed_threshold:
+                if bf_id:
+                    bf_completed_by_id[bf_id] = pct
+                if bf_book_id:
+                    bf_completed_by_book_id[bf_book_id] = pct
+
         self._emit_log(
             f'BookFusion date map: by book_id={len(bf_map_by_book_id)}, by id={len(bf_map_by_id)}, '
             f'invalid_dates={invalid_date_count}'
+        )
+        self._emit_log(
+            f'BookFusion completed map (threshold>={completed_threshold:.2f}%): '
+            f'by book_id={len(bf_completed_by_book_id)}, by id={len(bf_completed_by_id)}, '
+            f'invalid_percentage={invalid_percentage_count}'
         )
         self._emit_log(
             f'BookFusion ids observed: book_id={len(bf_all_book_ids)}, id={len(bf_all_ids)}'
@@ -174,10 +204,13 @@ class SyncWorker(QThread):
         self._log.info('Calibre processing order: newest read dates first; books without dates last')
 
         total = len(calibre_books)
-        updates = {}
+        date_updates = {}
+        completed_updates = {}
         skipped = 0
-        matched_by_book_id = 0
-        matched_by_id = 0
+        date_matched_by_book_id = 0
+        date_matched_by_id = 0
+        completed_matched_by_book_id = 0
+        completed_matched_by_id = 0
         skipped_no_date = 0
         skipped_not_in_api = 0
         skip_no_date_samples = 0
@@ -188,12 +221,21 @@ class SyncWorker(QThread):
                 break
             self.progress.emit(i, total)
 
-            entry = bf_map_by_book_id.get(bf_id)
-            matched_via = 'book_id'
-            if entry is None:
-                entry = bf_map_by_id.get(bf_id)
-                matched_via = 'id'
-            if entry is None:
+            date_entry = bf_map_by_book_id.get(bf_id)
+            date_match_via = 'book_id'
+            if date_entry is None:
+                date_entry = bf_map_by_id.get(bf_id)
+                date_match_via = 'id'
+
+            completed_pct = None
+            completed_match_via = 'book_id'
+            if completed_column:
+                completed_pct = bf_completed_by_book_id.get(bf_id)
+                if completed_pct is None:
+                    completed_pct = bf_completed_by_id.get(bf_id)
+                    completed_match_via = 'id'
+
+            if date_entry is None and completed_pct is None:
                 skipped += 1
                 if bf_id in bf_all_book_ids or bf_id in bf_all_ids:
                     skipped_no_date += 1
@@ -214,39 +256,67 @@ class SyncWorker(QThread):
                         skip_not_in_api_samples += 1
                 continue
 
-            dt, source = entry
-            if matched_via == 'book_id':
-                matched_by_book_id += 1
-            else:
-                matched_by_id += 1
-
-            updates[cal_id] = dt
             title = self._book_title(cal_id)
-            self._emit_log(
-                f'OK    {title}  →  {dt.strftime("%Y-%m-%d")}  (from {source}, match={matched_via})'
-            )
+            if date_entry is not None:
+                dt, source = date_entry
+                date_updates[cal_id] = dt
+                if date_match_via == 'book_id':
+                    date_matched_by_book_id += 1
+                else:
+                    date_matched_by_id += 1
+                self._emit_log(
+                    f'OK    {title}  →  {dt.strftime("%Y-%m-%d")}  '
+                    f'(from {source}, match={date_match_via})'
+                )
+
+            if completed_pct is not None:
+                completed_updates[cal_id] = True
+                if completed_match_via == 'book_id':
+                    completed_matched_by_book_id += 1
+                else:
+                    completed_matched_by_id += 1
+                self._emit_log(
+                    f'OK    {title}  →  Completed=True  '
+                    f'(percentage={completed_pct:.3f}, threshold={completed_threshold:.2f}, '
+                    f'match={completed_match_via})'
+                )
 
         if self._stop:
             self.log_message.emit('Sync cancelled.')
             self._log.info('Sync cancelled by user')
-            return self.finished.emit(len(updates), skipped)
+            return self.finished.emit(len(date_updates), skipped)
 
         # 4. Write all updates to Calibre in one call
-        if updates:
-            self.status.emit(f'Writing {len(updates)} dates to Calibre…')
-            self._log.info(f'Writing {len(updates)} dates to column {column!r}')
-            self.db.set_field(column, updates)
+        if date_updates:
+            self.status.emit(f'Writing {len(date_updates)} dates to Calibre…')
+            self._log.info(f'Writing {len(date_updates)} dates to column {column!r}')
+            self.db.set_field(column, date_updates)
+            self._emit_log(f'Applied {len(date_updates)} date updates to {column}')
+
+        if completed_column and completed_updates:
+            self.status.emit(f'Writing {len(completed_updates)} completed flags to Calibre…')
+            self._log.info(
+                f'Writing {len(completed_updates)} completed flags to column {completed_column!r}'
+            )
+            self.db.set_field(completed_column, completed_updates)
+            self._emit_log(
+                f'Applied {len(completed_updates)} completed flags to {completed_column}'
+            )
 
         self._log.info(
             'Match stats — '
-            f'updated={len(updates)}, matched_by_book_id={matched_by_book_id}, matched_by_id={matched_by_id}, '
+            f'date_updates={len(date_updates)}, '
+            f'date_match_book_id={date_matched_by_book_id}, date_match_id={date_matched_by_id}, '
+            f'completed_updates={len(completed_updates)}, '
+            f'completed_match_book_id={completed_matched_by_book_id}, '
+            f'completed_match_id={completed_matched_by_id}, '
             f'skipped_no_date={skipped_no_date}, skipped_not_in_api={skipped_not_in_api}, '
             f'sample_skip_logs={skip_no_date_samples + skip_not_in_api_samples}'
         )
 
-        self._log.info(f'Sync finished — {len(updates)} updated, {skipped} skipped')
+        self._log.info(f'Sync finished — {len(date_updates)} updated, {skipped} skipped')
         self.progress.emit(total, total)
-        self.finished.emit(len(updates), skipped)
+        self.finished.emit(len(date_updates), skipped)
 
     # ── HTTP with exponential back-off ───────────────────────────────────────
 
@@ -359,3 +429,12 @@ def _id_key(value):
     if value is None:
         return ''
     return str(value)
+
+
+def _as_float(value, default=None):
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
