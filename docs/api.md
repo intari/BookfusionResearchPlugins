@@ -325,7 +325,7 @@ Content-Type: `multipart/form-data`
 Сначала все поля из объекта `params` ответа `/uploads/init`, последним — поле `file`:
 
 ```http
-POST https://s3.amazonaws.com/bookfusion-uploads HTTP/1.1
+POST https://<storage-host>/<bucket> HTTP/1.1
 Content-Type: multipart/form-data; boundary=----Boundary
 
 ------Boundary
@@ -333,23 +333,21 @@ Content-Disposition: form-data; name="key"
 
 uploads/abc123def456/the-great-gatsby.epub
 ------Boundary
-Content-Disposition: form-data; name="AWSAccessKeyId"
+Content-Disposition: form-data; name="<param2>"
 
-AKIAIOSFODNN7EXAMPLE
+<value2>
 ------Boundary
-Content-Disposition: form-data; name="policy"
+Content-Disposition: form-data; name="<param3>"
 
-eyJleHBpcmF0aW9uIjoiMjAyNi0wNC0yN1QxMjowMDowMFoifQ==
-------Boundary
-Content-Disposition: form-data; name="signature"
-
-bWq2s1WEIj+Ydj0vQ685zfW47oA=
+<value3>
 ------Boundary
 Content-Disposition: form-data; name="file"; filename="the-great-gatsby.epub"
 
 (binary file content)
 ------Boundary--
 ```
+
+> Конкретные имена и значения полей (`<param2>`, `<param3>`, ...) определяются объектом `params` из ответа `POST /uploads/init`. В исходниках плагина они не зафиксированы — передаются итерацией по всем ключам `params`. Гарантированно присутствует только `key`. # UNVERIFIED
 
 | Поле | Тип | Описание |
 |------|-----|----------|

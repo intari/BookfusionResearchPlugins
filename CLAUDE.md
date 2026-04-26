@@ -2,8 +2,9 @@
 
 ## Контекст проекта
 
-Задача: восстановить документацию по semi-public REST API сервиса BookFusion
+Задача#1: восстановить документацию по semi-public REST API сервиса BookFusion
 и написать тесты которые проверяют что API работает.
+Задача#2: сделать BookfusionBackSync плагин для синхронизации "назад"
 
 Официальной документации нет. Источники знаний — исходники plugin'ов
 - Obsidian Plugin https://github.com/BookFusion/obsidian-plugin
