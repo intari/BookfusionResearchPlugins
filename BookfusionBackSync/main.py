@@ -68,7 +68,10 @@ class MainDialog(QDialog):
         self.status_label.setText('Starting…')
         self.progress_bar.setValue(0)
 
-        self.worker = SyncWorker(self.gui.current_db.new_api)
+        self.worker = SyncWorker(
+            self.gui.current_db.new_api,
+            self.gui.current_db.library_path,
+        )
         self.worker.log_message.connect(self._on_log)
         self.worker.progress.connect(self._on_progress)
         self.worker.status.connect(self.status_label.setText)

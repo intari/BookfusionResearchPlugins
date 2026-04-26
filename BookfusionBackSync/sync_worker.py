@@ -3,6 +3,7 @@ __license__ = 'GPL v3'
 import json
 import logging
 import os
+import tempfile
 import time
 import uuid
 import urllib.request
@@ -33,9 +34,10 @@ class SyncWorker(QThread):
     status = pyqtSignal(str)
     finished = pyqtSignal(int, int)   # updated, skipped
 
-    def __init__(self, db):
+    def __init__(self, db, library_path=None):
         QThread.__init__(self)
         self.db = db
+        self.library_path = library_path
         self._stop = False
         self._log = logging.getLogger('bookfusionbacksync')
 
@@ -54,7 +56,10 @@ class SyncWorker(QThread):
     # ── File logging ─────────────────────────────────────────────────────────
 
     def _setup_logging(self):
-        log_path = os.path.join(self.db.library_path, 'bookfusionbacksync.log')
+        base_path = self.library_path or getattr(self.db, 'library_path', None)
+        if not base_path:
+            base_path = tempfile.gettempdir()
+        log_path = os.path.join(base_path, 'bookfusionbacksync.log')
         logger = logging.getLogger('bookfusionbacksync')
         logger.setLevel(logging.DEBUG)
         logger.handlers.clear()
@@ -228,7 +233,6 @@ class SyncWorker(QThread):
                 'token': token,
                 'page': page,
                 'per_page': 100,
-                'sort': 'last_read_at-desc',
             })
             page_data = self._fetch_json(f'{_API_BASE}/v3/library/books.json?{params}')
             if not page_data:
