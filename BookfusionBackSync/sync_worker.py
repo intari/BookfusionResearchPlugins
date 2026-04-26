@@ -26,6 +26,10 @@ _POST_HEADERS = {
     'Content-Type': 'application/json',
 }
 
+_FETCH_PER_PAGE = 5000
+_FETCH_TIMEOUT = 90
+_SKIP_LOG_SAMPLE_LIMIT = 20
+
 
 class SyncWorker(QThread):
     log_message = pyqtSignal(str)
@@ -103,6 +107,9 @@ class SyncWorker(QThread):
         # 2. Fetch all BookFusion books (paginated).
         # Progress bar runs in marquee mode; status label shows running count.
         self.status.emit('Fetching BookFusion library…')
+        self._log.info(
+            f'Fetch settings: per_page={_FETCH_PER_PAGE}, timeout={_FETCH_TIMEOUT}s'
+        )
         bf_books = self._fetch_all_books(device, token)
         self._emit_log(f'Fetched {len(bf_books)} books from BookFusion')
         if self._stop:
@@ -155,6 +162,17 @@ class SyncWorker(QThread):
             f'{len(calibre_books)} Calibre books have a BookFusion identifier'
         )
 
+        def _calibre_sort_key(item):
+            _, bf_id = item
+            entry = bf_map_by_book_id.get(bf_id) or bf_map_by_id.get(bf_id)
+            if entry is None:
+                return (1, 0.0)
+            dt, _ = entry
+            return (0, -dt.timestamp())
+
+        calibre_books.sort(key=_calibre_sort_key)
+        self._log.info('Calibre processing order: newest read dates first; books without dates last')
+
         total = len(calibre_books)
         updates = {}
         skipped = 0
@@ -162,8 +180,10 @@ class SyncWorker(QThread):
         matched_by_id = 0
         skipped_no_date = 0
         skipped_not_in_api = 0
+        skip_no_date_samples = 0
+        skip_not_in_api_samples = 0
 
-        for i, (cal_id, bf_id, title) in enumerate(calibre_books):
+        for i, (cal_id, bf_id) in enumerate(calibre_books):
             if self._stop:
                 break
             self.progress.emit(i, total)
@@ -177,13 +197,21 @@ class SyncWorker(QThread):
                 skipped += 1
                 if bf_id in bf_all_book_ids or bf_id in bf_all_ids:
                     skipped_no_date += 1
-                    self._log.debug(
-                        f'SKIP  {title!r} — found in BookFusion but has no parseable read date '
-                        f'(bf_id={bf_id})'
-                    )
+                    if skip_no_date_samples < _SKIP_LOG_SAMPLE_LIMIT:
+                        title = self._book_title(cal_id)
+                        self._log.debug(
+                            f'SKIP  {title!r} — found in BookFusion but has no parseable read date '
+                            f'(bf_id={bf_id})'
+                        )
+                        skip_no_date_samples += 1
                 else:
                     skipped_not_in_api += 1
-                    self._log.debug(f'SKIP  {title!r} — not in BookFusion library (bf_id={bf_id})')
+                    if skip_not_in_api_samples < _SKIP_LOG_SAMPLE_LIMIT:
+                        title = self._book_title(cal_id)
+                        self._log.debug(
+                            f'SKIP  {title!r} — not in BookFusion library (bf_id={bf_id})'
+                        )
+                        skip_not_in_api_samples += 1
                 continue
 
             dt, source = entry
@@ -193,6 +221,7 @@ class SyncWorker(QThread):
                 matched_by_id += 1
 
             updates[cal_id] = dt
+            title = self._book_title(cal_id)
             self._emit_log(
                 f'OK    {title}  →  {dt.strftime("%Y-%m-%d")}  (from {source}, match={matched_via})'
             )
@@ -211,7 +240,8 @@ class SyncWorker(QThread):
         self._log.info(
             'Match stats — '
             f'updated={len(updates)}, matched_by_book_id={matched_by_book_id}, matched_by_id={matched_by_id}, '
-            f'skipped_no_date={skipped_no_date}, skipped_not_in_api={skipped_not_in_api}'
+            f'skipped_no_date={skipped_no_date}, skipped_not_in_api={skipped_not_in_api}, '
+            f'sample_skip_logs={skip_no_date_samples + skip_not_in_api_samples}'
         )
 
         self._log.info(f'Sync finished — {len(updates)} updated, {skipped} skipped')
@@ -274,9 +304,12 @@ class SyncWorker(QThread):
                 'device': device,
                 'token': token,
                 'page': page,
-                'per_page': 100,
+                'per_page': _FETCH_PER_PAGE,
             })
-            page_data = self._fetch_json(f'{_API_BASE}/v3/library/books.json?{params}')
+            page_data = self._fetch_json(
+                f'{_API_BASE}/v3/library/books.json?{params}',
+                timeout=_FETCH_TIMEOUT,
+            )
             if not page_data:
                 break
             all_books.extend(page_data)
@@ -286,7 +319,7 @@ class SyncWorker(QThread):
             # Marquee progress + live count in status bar
             self.progress.emit(len(all_books), 0)
             self.status.emit(f'Fetching BookFusion library… {len(all_books)} books')
-            if len(page_data) < 100:
+            if len(page_data) < _FETCH_PER_PAGE:
                 break
             page += 1
         return all_books
@@ -299,9 +332,11 @@ class SyncWorker(QThread):
             ids = self.db.field_for('identifiers', cal_id) or {}
             bf_id = ids.get('bookfusion')
             if bf_id:
-                title = self.db.field_for('title', cal_id) or f'Book #{cal_id}'
-                result.append((cal_id, str(bf_id), title))
+                result.append((cal_id, str(bf_id)))
         return result
+
+    def _book_title(self, cal_id):
+        return self.db.field_for('title', cal_id) or f'Book #{cal_id}'
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 

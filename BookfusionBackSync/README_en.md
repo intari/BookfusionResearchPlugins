@@ -28,16 +28,20 @@ Used during development:
 1. Authenticates to BookFusion using email and password (Private API).
 2. Fetches the full list of books from the BookFusion library.
 3. Matches books to Calibre by the `bookfusion` identifier (written by the
-   official plugin into Calibre Identifiers when a book is uploaded).
+   official plugin into Calibre Identifiers when a book is uploaded): first by
+   `BookV3.book_id`, then with fallback to `BookV3.id`.
 4. Writes the last-read date for each matched book into the selected
    Calibre custom Date column.
+5. Sorts processing order so the most recently read books are written first;
+   books without dates are processed last.
 
 Date source priority:
 - `last_read_at` from BookFusion API (when present)
 - `reading_position.updated_at` (used most often, because `last_read_at`
   is usually populated only by the mobile app)
 
-The dialog log shows, for each book, which date was written and from which field.
+The dialog log shows, for each book, which date was written, from which field,
+and which id mapping was used (`match=book_id` or `match=id`).
 
 ---
 
@@ -110,7 +114,7 @@ The first two stages (auth + network fetch) are indeterminate.
 For each updated book, lines look like:
 ```text
 OK    The Name of the Wind  ->  2024-11-03  (from reading_position.updated_at)
-OK    Dune                  ->  2025-01-15  (from last_read_at)
+OK    Dune                  ->  2025-01-15  (from last_read_at, match=book_id)
 ```
 
 Books without a match in BookFusion are skipped silently (counted in `M skipped`).
@@ -136,7 +140,8 @@ The token is then used as query params (`?device=...&token=...`) in GET requests
 
 Library: `GET /v3/library/books.json?page=N&per_page=100` for paginated export.
 Each `BookV3` item includes:
-- `id` - numeric user-library book id; matches `identifiers['bookfusion']`
+- `book_id` - global book id (this is usually what `identifiers['bookfusion']` stores)
+- `id` - user-library record id
 - `last_read_at` - last read timestamp (often `null`)
 - `reading_position.updated_at` - last reading position update timestamp
 
@@ -150,7 +155,8 @@ The official BookFusion plugin stores the remote id in Calibre:
 Identifiers -> bookfusion: 66816
 ```
 
-Back Sync reads this value and compares it with `BookV3.id` from API.
+Back Sync reads this value and compares it with `BookV3.book_id` from API
+(with fallback to `BookV3.id` for compatibility with older records).
 If matched, it writes the date to the selected column.
 
 ### Writing into Calibre

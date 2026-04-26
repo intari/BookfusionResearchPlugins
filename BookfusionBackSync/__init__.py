@@ -8,7 +8,7 @@ class BookFusionBackSyncPlugin(InterfaceActionBase):
     description = 'Sync last-read dates from BookFusion back into Calibre custom columns.'
     supported_platforms = ['windows', 'osx', 'linux']
     author = 'Dmitriy Kazimirov'
-    version = (0, 0, 2)
+    version = (0, 0, 3)
     minimum_calibre_version = (6, 2, 1)
 
     actual_plugin = 'calibre_plugins.bookfusionbacksync.ui:InterfacePlugin'
