@@ -1,9 +1,23 @@
 # BookFusion Back Sync — Calibre Plugin
 
+**Русская версия:** `readme.md` (этот файл)  
+**English version:** [README_en.md](README_en.md)
+
 Calibre-плагин для обратной синхронизации: читает даты последнего чтения из BookFusion
 и записывает их в выбранную custom-колонку Calibre.
 
 Работает параллельно со штатным плагином BookFusion (они не конфликтуют).
+
+## Об авторе,etc
+(c) Dmitriy Kazimirov <dmitriy.kazimirov@viorsan.com>
+Также были использованы исходники Calibre Bookfusion Plugin, Calibre Obsidian Plugin, результаты моих старых исследований private API (насколько помню - реверсинг для целей совместимости - по законам России можно)
+(когда нужный функционал будет доступен через публичный API - переделаю)
+
+Bookfusion (c) 
+## Использование ИИ:
+При разработке были использованы:
+- Claude Code
+- OpenCode с OpenAI Codex
 
 ---
 
