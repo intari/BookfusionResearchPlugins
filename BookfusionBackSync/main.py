@@ -18,6 +18,8 @@ class MainDialog(QDialog):
         self._pending_logs = []
         self._ui_batch_size = None
         self._ui_batch_logs_enabled = False
+        self._fetch_percent = -1
+        self._sync_percent = -1
 
         self.setWindowTitle('BookFusion Back Sync')
         self.resize(560, 420)
@@ -28,10 +30,21 @@ class MainDialog(QDialog):
         self.status_label = QLabel('Ready. Press "Sync Now" to start.')
         layout.addWidget(self.status_label)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        layout.addWidget(self.progress_bar)
+        self.fetch_progress_label = QLabel('Fetch Progress')
+        layout.addWidget(self.fetch_progress_label)
+
+        self.fetch_progress_bar = QProgressBar()
+        self.fetch_progress_bar.setRange(0, 100)
+        self.fetch_progress_bar.setValue(0)
+        layout.addWidget(self.fetch_progress_bar)
+
+        self.sync_progress_label = QLabel('Sync Progress')
+        layout.addWidget(self.sync_progress_label)
+
+        self.sync_progress_bar = QProgressBar()
+        self.sync_progress_bar.setRange(0, 100)
+        self.sync_progress_bar.setValue(0)
+        layout.addWidget(self.sync_progress_bar)
 
         self.log_list = QListWidget()
         layout.addWidget(self.log_list)
@@ -69,16 +82,20 @@ class MainDialog(QDialog):
         self.settings_btn.setEnabled(False)
         self.log_list.clear()
         self.status_label.setText('Starting…')
-        self.progress_bar.setValue(0)
+        self.fetch_progress_bar.setValue(0)
+        self.sync_progress_bar.setValue(0)
         self._pending_logs = []
         self._ui_batch_size = None
         self._ui_batch_logs_enabled = bool(prefs['ui_batch_logs'])
+        self._fetch_percent = -1
+        self._sync_percent = -1
 
         self.worker = SyncWorker(
             self.gui.current_db.new_api,
             self.gui.current_db.library_path,
         )
         self.worker.log_message.connect(self._on_log)
+        self.worker.fetch_progress.connect(self._on_fetch_progress)
         self.worker.progress.connect(self._on_progress)
         self.worker.status.connect(self.status_label.setText)
         self.worker.finished.connect(self._on_finished)
@@ -102,7 +119,18 @@ class MainDialog(QDialog):
                 self._flush_log_batch()
 
         if total > 0:
-            self.progress_bar.setValue(int(val * 100 / total))
+            pct = int(val * 100 / total)
+            if pct != self._sync_percent:
+                self._sync_percent = pct
+                self.sync_progress_bar.setValue(pct)
+
+    def _on_fetch_progress(self, val, total):
+        if total <= 0:
+            return
+        pct = int(val * 100 / total)
+        if pct != self._fetch_percent:
+            self._fetch_percent = pct
+            self.fetch_progress_bar.setValue(pct)
 
     def _on_finished(self, updated, skipped):
         self._flush_log_batch()
@@ -111,7 +139,8 @@ class MainDialog(QDialog):
         self.status_label.setText(
             f'Done — {updated} updated, {skipped} skipped.'
         )
-        self.progress_bar.setValue(100)
+        self.fetch_progress_bar.setValue(100)
+        self.sync_progress_bar.setValue(100)
         self.gui.library_view.model().refresh()
 
     def reject(self):

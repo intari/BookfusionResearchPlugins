@@ -8,13 +8,16 @@ and writes them into a selected Calibre custom date column.
 
 It works alongside the official BookFusion Calibre plugin (no conflicts).
 
+Login/password credentials are used **only** for BookFusion API authentication
+and are never sent to the plugin developer.
+
 ## About the author, etc
 (c) Dmitriy Kazimirov <dmitriy.kazimirov@viorsan.com>
 This project also uses ideas and findings from the Calibre BookFusion plugin,
 the Calibre Obsidian plugin, and my earlier private API research
 (as far as I remember, done for compatibility purposes).
 
-BookFusion (c)
+
 
 ## AI usage
 Used during development:
@@ -80,10 +83,17 @@ Open settings using the **Settings** button in the plugin dialog, or:
 | Password | Account password |
 | Last Read Column | Calibre custom Date column to write into |
 | Completed Column (bool) | Optional Calibre Yes/No column for completed books |
-| Completed Threshold (%) | Completion threshold in percent (default `99.9`) |
+| Completed Threshold (%) | Completion threshold in percent (default `98.9`) |
+| Fetch Page Size | Page size for `/v3/library/books.json` fetch (default `1337`) |
+| Fetch Timeout (sec) | Library fetch request timeout in seconds (default `90`) |
+| Full SKIP Logs | Log all `SKIP` lines (otherwise only a limited sample is written) |
+| Batch UI Logs | Batch log updates in UI; batch size is dynamic and never exceeds `0.5%` of total books |
 
 Password is stored as plain text in Calibre config
 (`plugins/bookfusionbacksync.json`), similar to how the official plugin stores the API key.
+
+In other words: credentials are stored locally on your machine and used only
+for BookFusion requests.
 
 Device ID is generated automatically on the first sync and then persisted.
 
@@ -110,8 +120,11 @@ The status line above the progress bar shows these stages:
 | `Writing N dates to Calibre...` | Writing all found dates in one call |
 | `Done - N updated, M skipped.` | Finished |
 
-The progress bar fills during Calibre-to-BookFusion matching.
-The first two stages (auth + network fetch) are indeterminate.
+The dialog has two progress bars:
+- top bar: BookFusion library fetch,
+- bottom bar: Calibre matching and writes.
+
+Both progress bars update only when integer percent changes.
 
 ### Log
 
@@ -125,6 +138,9 @@ OK    Dune                  ->  Completed=True  (percentage=100.000, threshold=9
 Books without a match in BookFusion are skipped silently (counted in `M skipped`).
 
 A book gets a visible `SKIP` line only when a date exists in BookFusion but cannot be parsed.
+
+When `Full SKIP Logs` is disabled, only a limited sample of `SKIP` lines is written to file logs,
+while full skip counts remain available in the final `Match stats` line.
 
 ### Cancel
 

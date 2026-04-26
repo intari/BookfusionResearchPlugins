@@ -12,10 +12,10 @@ prefs = JSONConfig('plugins/bookfusionbacksync')
 prefs.defaults['email'] = ''
 prefs.defaults['password'] = ''
 prefs.defaults['device'] = ''          # generated on first sync, stored forever
-prefs.defaults['last_read_column'] = '#dateread'
+prefs.defaults['last_read_column'] = '#read'
 prefs.defaults['completed_column'] = ''
-prefs.defaults['completed_threshold'] = 99.9
-prefs.defaults['fetch_page_size'] = 1980
+prefs.defaults['completed_threshold'] = 98.9
+prefs.defaults['fetch_page_size'] = 1337
 prefs.defaults['fetch_timeout'] = 90
 prefs.defaults['full_skip_logs'] = False
 prefs.defaults['ui_batch_logs'] = False
@@ -33,7 +33,10 @@ class ConfigWidget(QWidget):
             '<b>BookFusion Back Sync</b><br>'
             'Reads last-read dates from the BookFusion private API and writes them<br>'
             'to the selected Calibre custom column for books matched by their<br>'
-            '<tt>bookfusion</tt> identifier.'
+            '<tt>bookfusion</tt> identifier.<br>'
+            '<br>'
+            '<b>Privacy:</b> your login and password are used <i>only</i> to authenticate<br>'
+            'against BookFusion and are never sent to the plugin developer.'
         )
         help_label.setWordWrap(True)
         layout.addWidget(help_label)
@@ -102,6 +105,7 @@ class ConfigWidget(QWidget):
             'when reading percentage in BookFusion is above the threshold.<br>'
             'Batch UI logs groups log updates to reduce UI overhead.<br>'
             'Batch size is dynamic and never exceeds 0.5% of matched books.<br>'
+            'Credentials are stored locally in Calibre config on this machine.<br>'
             'Books are matched via the <tt>bookfusion</tt> identifier '
             '(set by the BookFusion Calibre plugin).</small>'
         )

@@ -2,6 +2,7 @@ __license__ = 'GPL v3'
 
 import json
 import logging
+import http.client
 import os
 import tempfile
 import time
@@ -26,15 +27,17 @@ _POST_HEADERS = {
     'Content-Type': 'application/json',
 }
 
-_FETCH_PER_PAGE = 5000
-_FETCH_TIMEOUT = 90
+_DEFAULT_FETCH_PAGE_SIZE = 1337
+_DEFAULT_FETCH_TIMEOUT = 90
 _SKIP_LOG_SAMPLE_LIMIT = 20
-_DEFAULT_COMPLETED_THRESHOLD = 99.9
+_DEFAULT_COMPLETED_THRESHOLD = 98.9
 
 
 class SyncWorker(QThread):
     log_message = pyqtSignal(str)
-    # progress(current, total): total==0 → marquee (fetch phase); total>0 → percent
+    # fetch_progress(current, total): progressive estimate for initial network fetch
+    fetch_progress = pyqtSignal(int, int)
+    # progress(current, total): scanning/sync phase, mapped to percent in UI
     progress = pyqtSignal(int, int)
     status = pyqtSignal(str)
     finished = pyqtSignal(int, int)   # updated, skipped
@@ -96,6 +99,19 @@ class SyncWorker(QThread):
             prefs['completed_threshold'],
             _DEFAULT_COMPLETED_THRESHOLD,
         )
+        fetch_page_size = _as_int(
+            prefs['fetch_page_size'],
+            _DEFAULT_FETCH_PAGE_SIZE,
+            min_value=10,
+            max_value=50000,
+        )
+        fetch_timeout = _as_int(
+            prefs['fetch_timeout'],
+            _DEFAULT_FETCH_TIMEOUT,
+            min_value=5,
+            max_value=600,
+        )
+        full_skip_logs = bool(prefs['full_skip_logs'])
         self._log.info(
             f'Email: {email}  Date column: {column}  '
             f'Completed column: {completed_column or "(disabled)"}  '
@@ -114,13 +130,27 @@ class SyncWorker(QThread):
         if self._stop:
             return self.finished.emit(0, 0)
 
+        # Pre-scan local identifiers once. Used both for matching and
+        # as an initial estimate for fetch progress total.
+        self.status.emit('Scanning Calibre library…')
+        calibre_books = self._calibre_books_with_bf_id()
+        self._emit_log(
+            f'{len(calibre_books)} Calibre books have a BookFusion identifier'
+        )
+        expected_fetch_total = max(len(calibre_books), 1)
+
         # 2. Fetch all BookFusion books (paginated).
-        # Progress bar runs in marquee mode; status label shows running count.
         self.status.emit('Fetching BookFusion library…')
         self._log.info(
-            f'Fetch settings: per_page={_FETCH_PER_PAGE}, timeout={_FETCH_TIMEOUT}s'
+            f'Fetch settings: per_page={fetch_page_size}, timeout={fetch_timeout}s'
         )
-        bf_books = self._fetch_all_books(device, token)
+        bf_books = self._fetch_all_books(
+            device,
+            token,
+            per_page=fetch_page_size,
+            timeout=fetch_timeout,
+            expected_total=expected_fetch_total,
+        )
         self._emit_log(f'Fetched {len(bf_books)} books from BookFusion')
         if self._stop:
             return self.finished.emit(0, 0)
@@ -185,12 +215,8 @@ class SyncWorker(QThread):
             f'BookFusion ids observed: book_id={len(bf_all_book_ids)}, id={len(bf_all_ids)}'
         )
 
-        # 3. Scan Calibre library (progress bar switches to determinate mode)
+        # 3. Match/write phase (progress bar switches to determinate mode)
         self.status.emit('Scanning Calibre library…')
-        calibre_books = self._calibre_books_with_bf_id()
-        self._emit_log(
-            f'{len(calibre_books)} Calibre books have a BookFusion identifier'
-        )
 
         def _calibre_sort_key(item):
             _, bf_id = item
@@ -216,10 +242,15 @@ class SyncWorker(QThread):
         skip_no_date_samples = 0
         skip_not_in_api_samples = 0
 
+        last_scan_percent = -1
         for i, (cal_id, bf_id) in enumerate(calibre_books):
             if self._stop:
                 break
-            self.progress.emit(i, total)
+            if total > 0:
+                scan_percent = int(i * 100 / total)
+                if scan_percent != last_scan_percent:
+                    last_scan_percent = scan_percent
+                    self.progress.emit(i, total)
 
             date_entry = bf_map_by_book_id.get(bf_id)
             date_match_via = 'book_id'
@@ -239,7 +270,7 @@ class SyncWorker(QThread):
                 skipped += 1
                 if bf_id in bf_all_book_ids or bf_id in bf_all_ids:
                     skipped_no_date += 1
-                    if skip_no_date_samples < _SKIP_LOG_SAMPLE_LIMIT:
+                    if full_skip_logs or skip_no_date_samples < _SKIP_LOG_SAMPLE_LIMIT:
                         title = self._book_title(cal_id)
                         self._log.debug(
                             f'SKIP  {title!r} — found in BookFusion but has no parseable read date '
@@ -248,7 +279,7 @@ class SyncWorker(QThread):
                         skip_no_date_samples += 1
                 else:
                     skipped_not_in_api += 1
-                    if skip_not_in_api_samples < _SKIP_LOG_SAMPLE_LIMIT:
+                    if full_skip_logs or skip_not_in_api_samples < _SKIP_LOG_SAMPLE_LIMIT:
                         title = self._book_title(cal_id)
                         self._log.debug(
                             f'SKIP  {title!r} — not in BookFusion library (bf_id={bf_id})'
@@ -311,7 +342,8 @@ class SyncWorker(QThread):
             f'completed_match_book_id={completed_matched_by_book_id}, '
             f'completed_match_id={completed_matched_by_id}, '
             f'skipped_no_date={skipped_no_date}, skipped_not_in_api={skipped_not_in_api}, '
-            f'sample_skip_logs={skip_no_date_samples + skip_not_in_api_samples}'
+            f'logged_skip_lines={skip_no_date_samples + skip_not_in_api_samples}, '
+            f'full_skip_logs={full_skip_logs}'
         )
 
         self._log.info(f'Sync finished — {len(date_updates)} updated, {skipped} skipped')
@@ -343,7 +375,7 @@ class SyncWorker(QThread):
                     return json.loads(data)
             except urllib.error.HTTPError:
                 raise   # auth failures, 404, etc. — no retry
-            except (urllib.error.URLError, OSError, TimeoutError) as exc:
+            except (urllib.error.URLError, OSError, TimeoutError, http.client.IncompleteRead) as exc:
                 last_exc = exc
                 self._log.warning(f'  Attempt {attempt + 1}/3 failed: {exc}')
                 if attempt < 2:
@@ -366,30 +398,40 @@ class SyncWorker(QThread):
 
     # ── BookFusion library fetch ──────────────────────────────────────────────
 
-    def _fetch_all_books(self, device, token):
+    def _fetch_all_books(self, device, token, per_page, timeout, expected_total):
         all_books = []
         page = 1
+        pages_fetched = 0
+        total_estimate = max(expected_total, 1)
+        self.fetch_progress.emit(0, total_estimate)
         while not self._stop:
             params = urllib.parse.urlencode({
                 'device': device,
                 'token': token,
                 'page': page,
-                'per_page': _FETCH_PER_PAGE,
+                'per_page': per_page,
             })
             page_data = self._fetch_json(
                 f'{_API_BASE}/v3/library/books.json?{params}',
-                timeout=_FETCH_TIMEOUT,
+                timeout=timeout,
             )
             if not page_data:
+                self.fetch_progress.emit(total_estimate, total_estimate)
                 break
             all_books.extend(page_data)
+            pages_fetched += 1
+            fetched = len(all_books)
+            if fetched > total_estimate:
+                total_estimate = fetched
+            if len(page_data) == per_page and fetched >= total_estimate:
+                total_estimate = fetched + per_page
             self._log.debug(
                 f'Page {page}: {len(page_data)} books  (running total: {len(all_books)})'
             )
-            # Marquee progress + live count in status bar
-            self.progress.emit(len(all_books), 0)
+            self.fetch_progress.emit(min(fetched, total_estimate), total_estimate)
             self.status.emit(f'Fetching BookFusion library… {len(all_books)} books')
-            if len(page_data) < _FETCH_PER_PAGE:
+            if len(page_data) < per_page:
+                self.fetch_progress.emit(total_estimate, total_estimate)
                 break
             page += 1
         return all_books
@@ -438,3 +480,18 @@ def _as_float(value, default=None):
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _as_int(value, default, min_value=None, max_value=None):
+    try:
+        if value is None:
+            return default
+        result = int(value)
+    except (TypeError, ValueError):
+        return default
+
+    if min_value is not None and result < min_value:
+        return min_value
+    if max_value is not None and result > max_value:
+        return max_value
+    return result
