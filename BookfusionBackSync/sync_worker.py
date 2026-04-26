@@ -1,6 +1,9 @@
 __license__ = 'GPL v3'
 
 import json
+import logging
+import os
+import time
 import uuid
 import urllib.request
 import urllib.parse
@@ -25,14 +28,16 @@ _POST_HEADERS = {
 
 class SyncWorker(QThread):
     log_message = pyqtSignal(str)
-    progress = pyqtSignal(int, int)   # current, total
+    # progress(current, total): total==0 → marquee (fetch phase); total>0 → percent
+    progress = pyqtSignal(int, int)
     status = pyqtSignal(str)
     finished = pyqtSignal(int, int)   # updated, skipped
 
     def __init__(self, db):
         QThread.__init__(self)
-        self.db = db          # calibre new_api (Cache)
+        self.db = db
         self._stop = False
+        self._log = logging.getLogger('bookfusionbacksync')
 
     def stop(self):
         self._stop = True
@@ -41,22 +46,42 @@ class SyncWorker(QThread):
         try:
             self._sync()
         except Exception as exc:
+            self._log.exception('Fatal error in sync')
             self.status.emit(f'Error: {exc}')
             self.log_message.emit(f'Fatal error: {exc}')
             self.finished.emit(0, 0)
 
-    # ── Main sync flow ───────────────────────────────────────────────────────
+    # ── File logging ─────────────────────────────────────────────────────────
+
+    def _setup_logging(self):
+        log_path = os.path.join(self.db.library_path, 'bookfusionbacksync.log')
+        logger = logging.getLogger('bookfusionbacksync')
+        logger.setLevel(logging.DEBUG)
+        logger.handlers.clear()
+        fh = logging.FileHandler(log_path, encoding='utf-8')
+        fh.setFormatter(logging.Formatter(
+            '%(asctime)s %(levelname)-8s %(message)s', '%Y-%m-%d %H:%M:%S'
+        ))
+        logger.addHandler(fh)
+        logger.info('─' * 60)
+        logger.info('Sync started')
+        return logger
+
+    # ── Main flow ────────────────────────────────────────────────────────────
 
     def _sync(self):
-        # Ensure a stable device ID exists
+        self._log = self._setup_logging()
+
         device = prefs['device']
         if not device:
             device = uuid.uuid4().hex[:16]
             prefs['device'] = device
+            self._log.info(f'Generated device ID: {device}')
 
-        email = prefs['email']
+        email    = prefs['email']
         password = prefs['password']
-        column = prefs['last_read_column']
+        column   = prefs['last_read_column']
+        self._log.info(f'Email: {email}  Column: {column}')
 
         # 1. Authenticate
         self.status.emit('Authenticating…')
@@ -66,20 +91,19 @@ class SyncWorker(QThread):
             raise RuntimeError(
                 f'Login failed (HTTP {exc.code}) — check email and password in Settings'
             )
-        self.log_message.emit(f'Authenticated as {email}')
+        self._emit_log(f'Authenticated as {email}')
         if self._stop:
             return self.finished.emit(0, 0)
 
-        # 2. Fetch all BookFusion books (paginated)
+        # 2. Fetch all BookFusion books (paginated).
+        # Progress bar runs in marquee mode; status label shows running count.
         self.status.emit('Fetching BookFusion library…')
         bf_books = self._fetch_all_books(device, token)
-        self.log_message.emit(f'Fetched {len(bf_books)} books from BookFusion')
+        self._emit_log(f'Fetched {len(bf_books)} books from BookFusion')
         if self._stop:
             return self.finished.emit(0, 0)
 
-        # Build lookup: str(BookV3.id) → (date_str, source_field_name)
-        # Primary source: last_read_at
-        # Fallback: reading_position.updated_at (more commonly populated)
+        # Build lookup: str(BookV3.id) → (date_str, source_field)
         bf_map = {}
         for book in bf_books:
             bf_id = str(book.get('id', ''))
@@ -94,14 +118,14 @@ class SyncWorker(QThread):
             if date_str:
                 bf_map[bf_id] = (date_str, source)
 
-        self.log_message.emit(
+        self._emit_log(
             f'{len(bf_map)} of {len(bf_books)} books have a read date in BookFusion'
         )
 
-        # 3. Collect Calibre books that carry a bookfusion identifier
+        # 3. Scan Calibre library (progress bar switches to determinate mode)
         self.status.emit('Scanning Calibre library…')
         calibre_books = self._calibre_books_with_bf_id()
-        self.log_message.emit(
+        self._emit_log(
             f'{len(calibre_books)} Calibre books have a BookFusion identifier'
         )
 
@@ -117,46 +141,83 @@ class SyncWorker(QThread):
             entry = bf_map.get(bf_id)
             if entry is None:
                 skipped += 1
+                self._log.debug(f'SKIP  {title!r} — not in BookFusion map (bf_id={bf_id})')
                 continue
 
             date_str, source = entry
             dt = _parse_iso(date_str)
             if dt is None:
                 skipped += 1
-                self.log_message.emit(f'SKIP  {title} — unparseable date {date_str!r}')
+                self._emit_log(f'SKIP  {title} — unparseable date {date_str!r}', level='warning')
                 continue
 
             updates[cal_id] = dt
-            self.log_message.emit(
+            self._emit_log(
                 f'OK    {title}  →  {dt.strftime("%Y-%m-%d")}  (from {source})'
             )
 
         if self._stop:
             self.log_message.emit('Sync cancelled.')
+            self._log.info('Sync cancelled by user')
             return self.finished.emit(len(updates), skipped)
 
-        # 4. Write all updates to Calibre in a single call
+        # 4. Write all updates to Calibre in one call
         if updates:
             self.status.emit(f'Writing {len(updates)} dates to Calibre…')
+            self._log.info(f'Writing {len(updates)} dates to column {column!r}')
             self.db.set_field(column, updates)
 
+        self._log.info(f'Sync finished — {len(updates)} updated, {skipped} skipped')
         self.progress.emit(total, total)
         self.finished.emit(len(updates), skipped)
 
-    # ── HTTP helpers ─────────────────────────────────────────────────────────
+    # ── HTTP with exponential back-off ───────────────────────────────────────
+
+    def _fetch_json(self, url, post_body=None, timeout=20):
+        """GET or POST, returning parsed JSON.
+
+        Retries up to 3 times on network/timeout errors with delays 2 s → 4 s.
+        Raises urllib.error.HTTPError immediately (4xx/5xx are not transient).
+        """
+        headers = _POST_HEADERS if post_body is not None else _GET_HEADERS
+        retry_delays = [2, 4]
+        last_exc = None
+
+        for attempt in range(3):
+            if self._stop:
+                raise RuntimeError('Sync stopped')
+            method = 'POST' if post_body is not None else 'GET'
+            self._log.debug(f'{method} {url}  (attempt {attempt + 1}/3)')
+            try:
+                req = urllib.request.Request(url, data=post_body, headers=headers)
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    data = resp.read()
+                    self._log.debug(f'  → {resp.status}  {len(data)} bytes')
+                    return json.loads(data)
+            except urllib.error.HTTPError:
+                raise   # auth failures, 404, etc. — no retry
+            except (urllib.error.URLError, OSError, TimeoutError) as exc:
+                last_exc = exc
+                self._log.warning(f'  Attempt {attempt + 1}/3 failed: {exc}')
+                if attempt < 2:
+                    wait = retry_delays[attempt]
+                    msg = f'Network error — retrying in {wait}s… ({exc})'
+                    self.log_message.emit(msg)
+                    self._log.info(f'  Waiting {wait}s before retry')
+                    time.sleep(wait)
+
+        raise RuntimeError(f'Failed after 3 attempts: {last_exc}')
+
+    # ── Auth ─────────────────────────────────────────────────────────────────
 
     def _login(self, device, email, password):
         body = json.dumps(
             {'device': device, 'login': email, 'password': password}
         ).encode('utf-8')
-        req = urllib.request.Request(
-            f'{_API_BASE}/v1/auth.json',
-            data=body,
-            headers=_POST_HEADERS,
-            method='POST',
-        )
-        with urllib.request.urlopen(req, timeout=15) as resp:
-            return json.loads(resp.read())['token']
+        data = self._fetch_json(f'{_API_BASE}/v1/auth.json', post_body=body)
+        return data['token']
+
+    # ── BookFusion library fetch ──────────────────────────────────────────────
 
     def _fetch_all_books(self, device, token):
         all_books = []
@@ -169,15 +230,16 @@ class SyncWorker(QThread):
                 'per_page': 100,
                 'sort': 'last_read_at-desc',
             })
-            req = urllib.request.Request(
-                f'{_API_BASE}/v3/library/books.json?{params}',
-                headers=_GET_HEADERS,
-            )
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                page_data = json.loads(resp.read())
+            page_data = self._fetch_json(f'{_API_BASE}/v3/library/books.json?{params}')
             if not page_data:
                 break
             all_books.extend(page_data)
+            self._log.debug(
+                f'Page {page}: {len(page_data)} books  (running total: {len(all_books)})'
+            )
+            # Marquee progress + live count in status bar
+            self.progress.emit(len(all_books), 0)
+            self.status.emit(f'Fetching BookFusion library… {len(all_books)} books')
             if len(page_data) < 100:
                 break
             page += 1
@@ -195,11 +257,17 @@ class SyncWorker(QThread):
                 result.append((cal_id, str(bf_id), title))
         return result
 
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _emit_log(self, msg, level='info'):
+        self.log_message.emit(msg)
+        getattr(self._log, level)(msg)
+
 
 # ── Utility ──────────────────────────────────────────────────────────────────
 
 def _parse_iso(s):
-    """Parse ISO 8601 string with trailing Z or +00:00 into a tz-aware datetime."""
+    """Parse ISO 8601 string (Z or +00:00 suffix) into a tz-aware datetime."""
     try:
         return datetime.fromisoformat(s.replace('Z', '+00:00'))
     except (ValueError, AttributeError):
