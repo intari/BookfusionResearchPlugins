@@ -108,12 +108,22 @@ class SyncWorker(QThread):
         if self._stop:
             return self.finished.emit(0, 0)
 
-        # Build lookup: str(BookV3.id) → (date_str, source_field)
-        bf_map = {}
+        # Build lookups for both id spaces used by BookFusion APIs:
+        # - BookV3.id (user library record id)
+        # - BookV3.book_id (global uploaded/catalog id, used by official Calibre plugin)
+        bf_map_by_id = {}
+        bf_map_by_book_id = {}
+        bf_all_ids = set()
+        bf_all_book_ids = set()
+        invalid_date_count = 0
         for book in bf_books:
-            bf_id = str(book.get('id', ''))
-            if not bf_id:
-                continue
+            bf_id = _id_key(book.get('id'))
+            bf_book_id = _id_key(book.get('book_id'))
+            if bf_id:
+                bf_all_ids.add(bf_id)
+            if bf_book_id:
+                bf_all_book_ids.add(bf_book_id)
+
             date_str = book.get('last_read_at')
             source = 'last_read_at'
             if not date_str:
@@ -121,10 +131,21 @@ class SyncWorker(QThread):
                 date_str = rp.get('updated_at')
                 source = 'reading_position.updated_at'
             if date_str:
-                bf_map[bf_id] = (date_str, source)
+                dt = _parse_iso(date_str)
+                if dt is None:
+                    invalid_date_count += 1
+                    continue
+                if bf_id:
+                    bf_map_by_id[bf_id] = (dt, source)
+                if bf_book_id:
+                    bf_map_by_book_id[bf_book_id] = (dt, source)
 
         self._emit_log(
-            f'{len(bf_map)} of {len(bf_books)} books have a read date in BookFusion'
+            f'BookFusion date map: by book_id={len(bf_map_by_book_id)}, by id={len(bf_map_by_id)}, '
+            f'invalid_dates={invalid_date_count}'
+        )
+        self._emit_log(
+            f'BookFusion ids observed: book_id={len(bf_all_book_ids)}, id={len(bf_all_ids)}'
         )
 
         # 3. Scan Calibre library (progress bar switches to determinate mode)
@@ -137,28 +158,43 @@ class SyncWorker(QThread):
         total = len(calibre_books)
         updates = {}
         skipped = 0
+        matched_by_book_id = 0
+        matched_by_id = 0
+        skipped_no_date = 0
+        skipped_not_in_api = 0
 
         for i, (cal_id, bf_id, title) in enumerate(calibre_books):
             if self._stop:
                 break
             self.progress.emit(i, total)
 
-            entry = bf_map.get(bf_id)
+            entry = bf_map_by_book_id.get(bf_id)
+            matched_via = 'book_id'
+            if entry is None:
+                entry = bf_map_by_id.get(bf_id)
+                matched_via = 'id'
             if entry is None:
                 skipped += 1
-                self._log.debug(f'SKIP  {title!r} — not in BookFusion map (bf_id={bf_id})')
+                if bf_id in bf_all_book_ids or bf_id in bf_all_ids:
+                    skipped_no_date += 1
+                    self._log.debug(
+                        f'SKIP  {title!r} — found in BookFusion but has no parseable read date '
+                        f'(bf_id={bf_id})'
+                    )
+                else:
+                    skipped_not_in_api += 1
+                    self._log.debug(f'SKIP  {title!r} — not in BookFusion library (bf_id={bf_id})')
                 continue
 
-            date_str, source = entry
-            dt = _parse_iso(date_str)
-            if dt is None:
-                skipped += 1
-                self._emit_log(f'SKIP  {title} — unparseable date {date_str!r}', level='warning')
-                continue
+            dt, source = entry
+            if matched_via == 'book_id':
+                matched_by_book_id += 1
+            else:
+                matched_by_id += 1
 
             updates[cal_id] = dt
             self._emit_log(
-                f'OK    {title}  →  {dt.strftime("%Y-%m-%d")}  (from {source})'
+                f'OK    {title}  →  {dt.strftime("%Y-%m-%d")}  (from {source}, match={matched_via})'
             )
 
         if self._stop:
@@ -171,6 +207,12 @@ class SyncWorker(QThread):
             self.status.emit(f'Writing {len(updates)} dates to Calibre…')
             self._log.info(f'Writing {len(updates)} dates to column {column!r}')
             self.db.set_field(column, updates)
+
+        self._log.info(
+            'Match stats — '
+            f'updated={len(updates)}, matched_by_book_id={matched_by_book_id}, matched_by_id={matched_by_id}, '
+            f'skipped_no_date={skipped_no_date}, skipped_not_in_api={skipped_not_in_api}'
+        )
 
         self._log.info(f'Sync finished — {len(updates)} updated, {skipped} skipped')
         self.progress.emit(total, total)
@@ -276,3 +318,9 @@ def _parse_iso(s):
         return datetime.fromisoformat(s.replace('Z', '+00:00'))
     except (ValueError, AttributeError):
         return None
+
+
+def _id_key(value):
+    if value is None:
+        return ''
+    return str(value)
