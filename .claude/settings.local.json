@@ -2,7 +2,10 @@
   "permissions": {
     "allow": [
       "Bash(python3 *)",
-      "Bash(echo \"---exit:$?\")"
+      "Bash(echo \"---exit:$?\")",
+      "Bash(python -c ' *)",
+      "Bash(zip -j BookfusionBackSync.zip BookfusionBackSync/__init__.py BookfusionBackSync/config.py BookfusionBackSync/main.py BookfusionBackSync/sync_worker.py BookfusionBackSync/ui.py BookfusionBackSync/plugin-import-name-bookfusionbacksync.txt)",
+      "Bash(unzip -l BookfusionBackSync.zip)"
     ]
   }
 }
