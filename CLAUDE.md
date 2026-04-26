@@ -79,3 +79,7 @@ tests/
 - Не трогать исходники  — только читать
 - Не писать тесты которые меняют данные без явного указания (DELETE, POST осторожно)
 - Не хардкодить credentials в тестах — только через env переменные
+
+
+## BookfusionBackSync
+- НЕ забывай обновлять BookfusionBackSync.zip при правках в BookfusionBackSync/

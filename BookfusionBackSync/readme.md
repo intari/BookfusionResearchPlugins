@@ -37,10 +37,7 @@ Calibre-плагин для обратной синхронизации: чит�
 
 ## Установка
 
-1. Скачать или собрать ZIP-архив из папки `BookfusionBackSync/`:
-   - Выделить все файлы внутри папки (`__init__.py`, `config.py`, `ui.py`, `main.py`,
-     `sync_worker.py`, `plugin-import-name-bookfusionbacksync.txt`)
-   - Упаковать в ZIP (не саму папку, а её содержимое)
+1. Скачать `BookfusionBackSync.zip` из корня репозитория.
 
 2. В Calibre: **Preferences → Plugins → Load plugin from file** → выбрать ZIP.
 
@@ -91,8 +88,7 @@ Device ID генерируется автоматически при перво�
 
 Библиотека: `GET /v3/library/books.json?page=N&per_page=100` — постраничная выгрузка.
 Каждая книга (`BookV3`) содержит:
-- `id` — числовой ID книги в библиотеке пользователя; совпадает с тем, что штатный
-  плагин сохраняет в `identifiers['bookfusion']`
+- `id` — числовой ID книги; совпадает с тем, что штатный плагин сохраняет в `identifiers['bookfusion']`
 - `last_read_at` — дата последнего чтения (часто `null`)
 - `reading_position.updated_at` — дата последнего обновления позиции чтения
 
